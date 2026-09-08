@@ -10,10 +10,22 @@ st.set_page_config(
     layout="wide"
 )
 
-# Conexión a DuckDB en modo Solo Lectura
+import os
+
+# Conexión a DuckDB con ruta absoluta
 @st.cache_resource
 def get_connection():
-    return duckdb.connect('data/warehouse.db', read_only=True)
+    # Obtiene la ruta del directorio donde está app.py
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.join(base_dir, 'data', 'warehouse.db')
+    
+    # Comprobar si existe el archivo
+    if not os.path.exists(db_path):
+        st.error(f"❌ No se encontró la base de datos en: {db_path}")
+        st.info("Asegúrate de subir la carpeta 'data' con 'warehouse.db' a tu repositorio de GitHub.")
+        st.stop()
+        
+    return duckdb.connect(db_path, read_only=True)
 
 con = get_connection()
 
