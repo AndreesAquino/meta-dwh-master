@@ -148,3 +148,5 @@ with tab3:
     """)
     st.subheader("Vista previa de la Tabla de Hechos Unificada")
     st.dataframe(con.execute("SELECT * FROM fact_inscripciones LIMIT 10").df())
+
+
