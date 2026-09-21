@@ -152,8 +152,25 @@ with tab3:
     else:
         st.info("No hay fechas de inscripción válidas para la selección actual.")
 
-# TAB 4: Explorador de Datos Anónimos
+# --- Pestaña 4: Exploración de datos ---
 with tab4:
-    st.subheader("Vista Previa de Datos Anónimos en el DWH")
-    cols_mostrar = [c for c in ['ID_Inscripcion', 'Evento', 'Año', 'Distancia', 'Operador', 'Fecha_Inscripcion'] if c in df_filtrado.columns]
-    st.dataframe(df_filtrado[cols_mostrar], use_container_width=True)
+  st.subheader('Exploración de datos')
+
+  # Copia del DataFrame filtrado
+  df_exploracion = df_filtrado.copy()
+
+  # CAMBIO: Reiniciar el índice para que empiece en 1 en lugar del índice original (ej. 5009)
+  df_exploracion = df_exploracion.reset_index(drop=True)
+  df_exploracion.index = df_exploracion.index + 1
+
+  # Mostrar la tabla
+  st.dataframe(df_exploracion, use_container_width=True)
+
+  # Botón de descarga CSV
+  csv = df_exploracion.to_csv(index=False).encode('utf-8')
+  st.download_button(
+      label='📥 Descargar datos filtrados (CSV)',
+      data=csv,
+      file_name='datos_inscripciones.csv',
+      mime='text/csv',
+  )
