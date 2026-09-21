@@ -25,26 +25,14 @@ def get_connection():
 
 con = get_connection()
 
-# --- CARGAR DATOS CON TOLERANCIA Y DIAGNÓSTICO DE TABLAS ---
+# --- CARGAR DATOS ---
 try:
   try:
     df_all = con.execute('SELECT * FROM inscripciones').df()
   except Exception:
     df_all = con.execute('SELECT * FROM dim_inscripciones').df()
-except Exception as e:
-  try:
-    tablas_existentes = con.execute('SHOW TABLES').df()
-    lista_tablas = (
-        tablas_existentes['name'].tolist()
-        if not tablas_existentes.empty
-        else ['Ninguna']
-    )
-  except Exception:
-    lista_tablas = ['No se pudieron consultar las tablas']
-
+except Exception:
   st.error('❌ No se encontró la tabla de inscripciones en la base de datos.')
-  st.warning(f'📋 Tablas detectadas en DuckDB: {lista_tablas}')
-  st.info('💡 **Solución:** Ve a Streamlit Cloud -> "Manage app" -> "Reboot app".')
   st.stop()
 
 # --- BARRA LATERAL: FILTROS DINÁMICOS ---
@@ -61,7 +49,7 @@ else:
 
 año_sel = st.sidebar.selectbox('📅 Selecciona el Año', opciones_año)
 
-# Filtrar dataframe por Año
+# Filtrar por Año
 df_filtrado = df_all.copy()
 if año_sel != 'Todos':
   df_filtrado = df_filtrado[df_filtrado['Año'] == int(año_sel)]
@@ -125,6 +113,13 @@ with tab1:
     df_dist = df_filtrado['Distancia'].value_counts().reset_index()
     df_dist.columns = ['Distancia', 'Cantidad']
 
+    # Orden personalizado de distancias (10K primero, luego 5K, 3K, etc.)
+    orden_distancias = ['10K', '5K', '3K', 'Adulto', 'Infantil', 'General']
+    df_dist['orden'] = df_dist['Distancia'].map(
+        lambda x: orden_distancias.index(x) if x in orden_distancias else 99
+    )
+    df_dist = df_dist.sort_values('orden').drop(columns=['orden'])
+
     fig_dist = px.bar(
         df_dist,
         x='Distancia',
@@ -133,8 +128,10 @@ with tab1:
         color='Distancia',
         title='Competidores por Distancia / Tarifa',
     )
-    # Posicionar etiquetas fuera/arriba de la barra para evitar solapamientos
     fig_dist.update_traces(textposition='outside')
+    fig_dist.update_xaxes(
+        categoryorder='array', categoryarray=df_dist['Distancia'].tolist()
+    )
     fig_dist.update_layout(yaxis=dict(range=[0, df_dist['Cantidad'].max() * 1.18]))
 
     st.plotly_chart(fig_dist, use_container_width=True)
@@ -193,23 +190,20 @@ with tab3:
   else:
     st.info('No hay fechas de inscripción válidas para la selección actual.')
 
-# TAB 4: Explorador de Datos Anónimos
+# TAB 4: Explorador de Datos
 with tab4:
   st.subheader('Exploración de datos')
 
   df_exploracion = df_filtrado.copy()
 
-  # 1. Eliminar columna auxiliar
   if 'Fecha_DT' in df_exploracion.columns:
     df_exploracion = df_exploracion.drop(columns=['Fecha_DT'])
 
-  # 2. Formatear la fecha como texto sin hora (AAAA-MM-DD)
   if 'Fecha_Inscripcion' in df_exploracion.columns:
     df_exploracion['Fecha_Inscripcion'] = pd.to_datetime(
         df_exploracion['Fecha_Inscripcion'], errors='coerce'
     ).dt.strftime('%Y-%m-%d')
 
-  # 3. Reiniciar índice para que comience en 1
   df_exploracion = df_exploracion.reset_index(drop=True)
   df_exploracion.index = df_exploracion.index + 1
 
@@ -228,7 +222,6 @@ with tab4:
 
   st.dataframe(df_exploracion[cols_mostrar], use_container_width=True)
 
-  # Botón de descarga
   csv = df_exploracion[cols_mostrar].to_csv(index=False).encode('utf-8')
   st.download_button(
       label='📥 Descargar datos filtrados (CSV)',
