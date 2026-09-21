@@ -1,4 +1,4 @@
-import os
+﻿import os
 import duckdb
 import pandas as pd
 import streamlit as st
@@ -156,14 +156,24 @@ with tab3:
 with tab4:
   st.subheader('Exploración de datos')
 
-  # Copia del DataFrame filtrado
+  # Copia del DataFrame filtrado para la vista
   df_exploracion = df_filtrado.copy()
 
-  # CAMBIO: Reiniciar el índice para que empiece en 1 en lugar del índice original (ej. 5009)
+  # 1. Quitar la columna auxiliar 'Fecha_DT' para que no aparezca repetida
+  if 'Fecha_DT' in df_exploracion.columns:
+    df_exploracion = df_exploracion.drop(columns=['Fecha_DT'])
+
+  # 2. Formatear 'Fecha_Inscripcion' como texto simple (AAAA-MM-DD) para ocultar las horas
+  if 'Fecha_Inscripcion' in df_exploracion.columns:
+    df_exploracion['Fecha_Inscripcion'] = pd.to_datetime(
+        df_exploracion['Fecha_Inscripcion'], errors='coerce'
+    ).dt.strftime('%Y-%m-%d')
+
+  # 3. Reiniciar el índice para que comience en 1
   df_exploracion = df_exploracion.reset_index(drop=True)
   df_exploracion.index = df_exploracion.index + 1
 
-  # Mostrar la tabla
+  # Mostrar la tabla limpia
   st.dataframe(df_exploracion, use_container_width=True)
 
   # Botón de descarga CSV
