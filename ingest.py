@@ -1,147 +1,175 @@
-import pandas as pd
-import duckdb
 import os
+import duckdb
+import pandas as pd
 
-def ejecutar_etl_multifuente():
-    print("🚀 Iniciando ETL Multi-Fuente para EAF y FIMSS 2025...")
-    
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = os.path.dirname(script_dir)
-    archivos = os.listdir(base_dir)
-    
-    f_operadoras = None
-    f_publico = None
-    f_fimss = None
-    
-    for f in archivos:
-        f_upper = f.upper()
-        if f.endswith('.xlsx') and not f.startswith('~$'):
-            if 'OPERADORAS' in f_upper:
-                f_operadoras = os.path.join(base_dir, f)
-            elif 'PUBLICO' in f_upper or 'PÚBLICO' in f_upper or 'GENERAL' in f_upper:
-                f_publico = os.path.join(base_dir, f)
-            elif 'FIMSS' in f_upper:
-                f_fimss = os.path.join(base_dir, f)
+# Rutas de carpetas
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+DB_PATH = os.path.join(DATA_DIR, 'warehouse.db')
 
-    dfs = []
-    
-    # 1. Cargar EAF Operadoras
-    if f_operadoras:
-        df1 = pd.read_excel(f_operadoras)
-        df1['evento_id'] = 1
-        df1['nombre_evento'] = 'EAF 2025'
-        df1['tipo_registro'] = 'Corporativo (Operadoras)'
-        col_op = '¿A que Operadora perteneces?' if '¿A que Operadora perteneces?' in df1.columns else df1.columns[0]
-        df1['operadora_origen'] = df1[col_op]
-        df1['distancia_limpia'] = df1['Distancia'] if 'Distancia' in df1.columns else df1['TARIFA']
-        dfs.append(df1)
-        
-    # 2. Cargar EAF Público General
-    if f_publico:
-        df2 = pd.read_excel(f_publico)
-        df2['evento_id'] = 1
-        df2['nombre_evento'] = 'EAF 2025'
-        df2['tipo_registro'] = 'Público General'
-        df2['operadora_origen'] = 'Público General'
-        df2['distancia_limpia'] = df2['Distancia'] if 'Distancia' in df2.columns else df2['TARIFA']
-        dfs.append(df2)
+# Lista de archivos a procesar (Si no usas alguno de EAF, borra la línea correspondiente)
+archivos_eventos = [
+    {'archivo': 'COPPEL.xlsx', 'nombre_evento': 'Coppel'},
+    {
+        'archivo': 'DESGLOSE FINAL SALUD RENAL 2026.xlsx',
+        'nombre_evento': 'Salud Renal',
+    },
+    {'archivo': 'PASCUAL.xlsx', 'nombre_evento': 'Pascual'},
+    {'archivo': 'WARRIORS.xlsx', 'nombre_evento': 'Warriors'},
+    {'archivo': 'EAF OPERADORAS 2.xlsx', 'nombre_evento': 'EAF 2025'},
+    {'archivo': 'EAF OPERADORAS 2025.xlsx', 'nombre_evento': 'EAF 2025'},
+    {'archivo': 'EAF PÚBLICO EN GENERAL 2025.xlsx', 'nombre_evento': 'EAF 2025'},
+    {'archivo': 'FIMSS 2025.xlsx', 'nombre_evento': 'FIMSS 2025'},
+]
 
-    # 3. Cargar FIMSS
-    if f_fimss:
-        df3 = pd.read_excel(f_fimss)
-        df3['evento_id'] = 2
-        df3['nombre_evento'] = 'FIMSS 2025'
-        df3['tipo_registro'] = 'General IMSS'
-        df3['operadora_origen'] = 'FIMSS / IMSS'
-        # En FIMSS no existe la columna 'Distancia', asignamos 'TARIFA' (3K, 5K, 10K)
-        df3['distancia_limpia'] = df3['TARIFA']
-        dfs.append(df3)
+datos_consolidados = []
 
-    if not dfs:
-        print("❌ Error: No se logró cargar ningún archivo Excel.")
-        return
+for item in archivos_eventos:
+  file_path = os.path.join(DATA_DIR, item['archivo'])
+  if not os.path.exists(file_path):
+    file_path = os.path.join(BASE_DIR, item['archivo'])
 
-    df_raw = pd.concat(dfs, ignore_index=True)
+  if not os.path.exists(file_path):
+    print(f"⚠️ Archivo no encontrado: {item['archivo']}")
+    continue
 
-    # --- LIMPIEZA DE CAMPOS ---
-    if 'Genero' in df_raw.columns and 'Género' in df_raw.columns:
-        df_raw['genero_limpio'] = df_raw['Género'].fillna(df_raw['Genero']).replace({'Desconocido': None})
-    elif 'Género' in df_raw.columns:
-        df_raw['genero_limpio'] = df_raw['Género'].replace({'Desconocido': None})
+  print(f"\nProcesando {item['archivo']} desde: {file_path}")
+  df = pd.read_excel(file_path)
+
+  # Limpiar filas completamente vacías
+  df = df.dropna(how='all')
+
+  df_limpio = pd.DataFrame()
+
+  # 1. ID Inscripción
+  if 'NO. INSCRIPCIÓN' in df.columns:
+    df_limpio['ID_Inscripcion'] = df['NO. INSCRIPCIÓN'].astype(str)
+  elif 'LOCALIZADOR' in df.columns:
+    df_limpio['ID_Inscripcion'] = df['LOCALIZADOR'].astype(str)
+  else:
+    df_limpio['ID_Inscripcion'] = [
+        f'{item["nombre_evento"]}_{i+1}' for i in range(len(df))
+    ]
+
+  # Eliminar filas de TOTAL o resúmenes al final del Excel
+  df_limpio = df_limpio[
+      ~df_limpio['ID_Inscripcion'].str.upper().str.contains('TOTAL', na=False)
+  ]
+  df = df.loc[df_limpio.index]
+
+  # 2. Evento
+  df_limpio['Evento'] = item['nombre_evento']
+
+  # 3. Fecha de inscripción
+  col_fecha = [
+      c
+      for c in df.columns
+      if 'FECHA' in str(c).upper() and 'INSCRIPCI' in str(c).upper()
+  ]
+  if col_fecha:
+    fechas_dt = pd.to_datetime(df[col_fecha[0]], dayfirst=True, errors='coerce')
+    df_limpio['Fecha_Inscripcion'] = fechas_dt.dt.strftime('%Y-%m-%d')
+    df_limpio['Año'] = fechas_dt.dt.year
+  else:
+    df_limpio['Fecha_Inscripcion'] = None
+    df_limpio['Año'] = None
+
+  if '2025' in item['nombre_evento']:
+    df_limpio['Año'] = df_limpio['Año'].fillna(2025)
+  else:
+    df_limpio['Año'] = df_limpio['Año'].fillna(2026)
+
+  # 4. Obtención de Distancia / Tarifa / Modalidad
+  dist_serie = None
+  for col_candidate in ['DISTANCIA', 'MODALIDAD', 'TARIFA']:
+    if col_candidate in df.columns:
+      serie = (
+          df[col_candidate]
+          .astype(str)
+          .str.strip()
+          .replace(['nan', 'None', 'NaN', '<NA>', '', '-'], None)
+      )
+      if dist_serie is None:
+        dist_serie = serie
+      else:
+        dist_serie = dist_serie.fillna(serie)
+
+  if dist_serie is not None:
+    df_limpio['Distancia'] = dist_serie
+  else:
+    df_limpio['Distancia'] = None
+
+  # Imprimir los registros que no tienen distancia en la consola para identificarlos
+  sin_dist = df_limpio[df_limpio['Distancia'].isna()]
+  if not sin_dist.empty:
+    for idx_row, r in sin_dist.iterrows():
+      print(
+          f"🔍 [REGISTRO SIN DISTANCIA] Evento: {item['nombre_evento']} | Fila"
+          f" Excel aprox: {idx_row + 2} | ID_Inscripción: {r['ID_Inscripcion']}"
+      )
+
+  # 5. Operador
+  if (
+      'SELECCIONA TU EMPRESA' in df.columns
+      and df['SELECCIONA TU EMPRESA'].notna().any()
+  ):
+    df_limpio['Operador'] = df['SELECCIONA TU EMPRESA']
+  elif 'ORIGEN DE LA INSCRIPCIÓN' in df.columns:
+    df_limpio['Operador'] = df['ORIGEN DE LA INSCRIPCIÓN']
+  elif 'NOMBRE IMPORTACIÓN' in df.columns:
+    df_limpio['Operador'] = df['NOMBRE IMPORTACIÓN']
+  elif 'OPERADOR' in df.columns:
+    df_limpio['Operador'] = df['OPERADOR']
+  else:
+    df_limpio['Operador'] = 'Sin Operador / Directo'
+
+  # 6. Estandarización y Desglose estricto de distancias (Adulto / Infantil)
+  registros_procesados = []
+  for idx, row in df_limpio.iterrows():
+    dist_raw = str(row['Distancia']).strip() if row['Distancia'] else ''
+    dist_upper = dist_raw.upper()
+
+    if 'ADULTO' in dist_upper and 'INFANTIL' in dist_upper:
+      # Separar en 2 inscripciones
+      r_adulto = row.copy()
+      r_adulto['Distancia'] = 'Adulto'
+      r_adulto['ID_Inscripcion'] = f"{row['ID_Inscripcion']}_Adulto"
+
+      r_infantil = row.copy()
+      r_infantil['Distancia'] = 'Infantil'
+      r_infantil['ID_Inscripcion'] = f"{row['ID_Inscripcion']}_Infantil"
+
+      registros_procesados.extend([r_adulto, r_infantil])
+    elif 'INFANTIL' in dist_upper:
+      r_norm = row.copy()
+      r_norm['Distancia'] = 'Infantil'
+      registros_procesados.append(r_norm)
+    elif 'ADULTO' in dist_upper:
+      r_norm = row.copy()
+      r_norm['Distancia'] = 'Adulto'
+      registros_procesados.append(r_norm)
     else:
-        df_raw['genero_limpio'] = df_raw['Genero'].replace({'Desconocido': None})
+      r_norm = row.copy()
+      r_norm['Distancia'] = dist_raw if dist_raw else 'General'
+      registros_procesados.append(r_norm)
 
-    talla_cols = [c for c in df_raw.columns if 'Talla' in c or 'talla' in c]
-    df_raw['talla_playera'] = df_raw[talla_cols].bfill(axis=1).iloc[:, 0] if talla_cols else None
+  df_evento_final = pd.DataFrame(registros_procesados)
+  datos_consolidados.append(df_evento_final)
 
-    cat_cols = [c for c in df_raw.columns if 'Categoria' in c or 'categoria' in c]
-    df_raw['categoria_limpia'] = df_raw[cat_cols].bfill(axis=1).iloc[:, 0] if cat_cols else None
+if not datos_consolidados:
+  print('❌ No se encontró ningún archivo de Excel para procesar.')
+else:
+  df_final = pd.concat(datos_consolidados, ignore_index=True)
+  df_final['Distancia'] = df_final['Distancia'].replace(
+      ['', 'None', 'nan', None], 'General'
+  )
+  df_final['Operador'] = df_final['Operador'].fillna('Sin Operador / Directo')
+  df_final['Año'] = df_final['Año'].fillna(2026).astype(int)
 
-    df_raw['codigo_cupon_limpio'] = df_raw['CÓDIGO CUPÓN'] if 'CÓDIGO CUPÓN' in df_raw.columns else None
+  # Guardar en DuckDB
+  os.makedirs(DATA_DIR, exist_ok=True)
+  con = duckdb.connect(DB_PATH)
+  con.execute('CREATE OR REPLACE TABLE inscripciones AS SELECT * FROM df_final')
+  con.close()
 
-    if 'NÚMERO DE COMPETIDOR' in df_raw.columns and 'DORSAL' in df_raw.columns:
-        df_raw['dorsal_limpio'] = df_raw['DORSAL'].fillna(df_raw['NÚMERO DE COMPETIDOR'])
-    elif 'DORSAL' in df_raw.columns:
-        df_raw['dorsal_limpio'] = df_raw['DORSAL']
-    else:
-        df_raw['dorsal_limpio'] = df_raw['NÚMERO DE COMPETIDOR']
-
-    # --- DIMENSIONES ---
-    df_eventos = df_raw[['evento_id', 'nombre_evento']].drop_duplicates().reset_index(drop=True)
-    
-    df_operadoras = pd.DataFrame({'nombre_operadora': df_raw['operadora_origen'].unique()}).dropna().reset_index()
-    df_operadoras.columns = ['operadora_id', 'nombre_operadora']
-    df_operadoras['operadora_id'] += 1
-
-    df_cupones = pd.DataFrame({'codigo_cupon': df_raw['codigo_cupon_limpio'].dropna().unique()}).reset_index()
-    df_cupones.columns = ['cupon_id', 'codigo_cupon']
-    df_cupones['cupon_id'] += 1
-
-    df_participantes = df_raw[['Nombre', 'Apellidos', 'genero_limpio', 'Fecha nacimiento', 'Email', 'Teléfono móvil']].drop_duplicates().reset_index(drop=True)
-    df_participantes['participante_id'] = df_participantes.index + 1
-    df_participantes.rename(columns={
-        'Nombre': 'nombre', 'Apellidos': 'apellidos',
-        'genero_limpio': 'genero', 'Fecha nacimiento': 'fecha_nacimiento',
-        'Email': 'email', 'Teléfono móvil': 'telefono'
-    }, inplace=True)
-
-    # Relaciones
-    df_raw = df_raw.merge(df_operadoras, left_on='operadora_origen', right_on='nombre_operadora', how='left')
-    df_raw = df_raw.merge(df_cupones, left_on='codigo_cupon_limpio', right_on='codigo_cupon', how='left')
-    df_raw = df_raw.merge(df_participantes, left_on=['Nombre', 'Apellidos', 'Email'], right_on=['nombre', 'apellidos', 'email'], how='left')
-
-    # Hechos
-    df_fact = pd.DataFrame({
-        'dorsal': df_raw['dorsal_limpio'],
-        'localizador': df_raw['LOCALIZADOR'],
-        'no_inscripcion': df_raw['NO. INSCRIPCIÓN'],
-        'evento_id': df_raw['evento_id'],
-        'participante_id': df_raw['participante_id'],
-        'operadora_id': df_raw['operadora_id'],
-        'cupon_id': df_raw['cupon_id'],
-        'tipo_registro': df_raw['tipo_registro'],
-        'tarifa': df_raw['TARIFA'],
-        'distancia': df_raw['distancia_limpia'],
-        'categoria': df_raw['categoria_limpia'],
-        'talla_playera': df_raw['talla_playera'],
-        'fecha_inscripcion': pd.to_datetime(df_raw['FECHA DE INSCRIPCIÓN'], format='%d/%m/%Y', errors='coerce')
-    })
-
-    # --- CARGA EN DUCKDB ---
-    db_dir = os.path.join(base_dir, 'data')
-    os.makedirs(db_dir, exist_ok=True)
-    db_path = os.path.join(db_dir, 'warehouse.db')
-    
-    con = duckdb.connect(db_path)
-    con.execute("CREATE OR REPLACE TABLE dim_eventos AS SELECT * FROM df_eventos")
-    con.execute("CREATE OR REPLACE TABLE dim_operadoras AS SELECT * FROM df_operadoras")
-    con.execute("CREATE OR REPLACE TABLE dim_cupones AS SELECT * FROM df_cupones")
-    con.execute("CREATE OR REPLACE TABLE dim_participantes AS SELECT * FROM df_participantes")
-    con.execute("CREATE OR REPLACE TABLE fact_inscripciones AS SELECT * FROM df_fact")
-
-    print(f"\n🎉 ¡ETL REGENERADO CON ÉXITO!")
-    print(f"  • Registros cargados en Fact: {len(df_fact)}")
-    con.close()
-
-if __name__ == '__main__':
-    ejecutar_etl_multifuente()
+  print('\n✅ Base de datos recreada con éxito en warehouse.db')
